@@ -1,15 +1,24 @@
+var dbAddress = 'mongodb://localhost:27017/agenda-test';
+
 var expect = require('expect.js'),
-    mongo = require('mongoskin').db('localhost:27017/agenda-test', {w: 0}),
+    mongo = require('mongodb'),
     jobs = require('../index.js')({
       defaultConcurrency: 5,
       db: {
-        address: 'localhost:27017/agenda-test'
+        address: dbAddress
       }
     }),
     Job = require('../lib/job.js');
-    
+
 before(function(done) {
-  mongo.collection('agendaJobs').remove({}, done);
+  if(null !== jobs._db) done();
+  else jobs._dbPendingFn.push(done);
+});
+after(function(done) {
+  jobs.database(dbAddress);
+  jobs._dbPendingFn.push(function() {
+    jobs._db.remove({}, done);
+  });
 });
 
 describe('Agenda', function() {
@@ -19,16 +28,31 @@ describe('Agenda', function() {
 
   describe('configuration methods', function() {
     describe('database', function() {
-      it('sets the database', function() {
-        jobs.database('localhost:27017/agenda-test');
-        expect(jobs._db.skinDb._dbconn.databaseName).to.be('agenda-test');
+      it('sets the url', function(done) {
+        jobs.database(dbAddress);
+        jobs._dbPendingFn.push(function() {
+          expect(jobs._db.db.databaseName).to.be('agenda-test');
+          done();
+        });
       });
-      it('sets the collection', function() {
-        jobs.database('localhost:27017/agenda-test', 'myJobs');
-        expect(jobs._db.collectionName).to.be('myJobs');
+      it('sets the collection', function(done) {
+        var collectionName = 'myJobs'
+        jobs.database(dbAddress, collectionName);
+        jobs._dbPendingFn.push(function() {
+          expect(jobs._db.collectionName).to.be(collectionName);
+          done()
+        });
+      });
+      it('sets the database', function(done) {
+        var databaseName = 'agenda-test2';
+        jobs.database(dbAddress, null, databaseName);
+        jobs._dbPendingFn.push(function() {
+          expect(jobs._db.db.databaseName).to.be(databaseName);
+          done();
+        });
       });
       it('returns itself', function() {
-        expect(jobs.database('localhost:27017/agenda-test')).to.be(jobs);
+        expect(jobs.database(dbAddress)).to.be(jobs);
       });
     });
     describe('processEvery', function() {
@@ -150,6 +174,14 @@ describe('Agenda', function() {
         var job = jobs.create('someJob', {});
         job.save(function(err, job) {
           expect(job.attrs._id).to.be.ok();
+          done();
+        });
+      });
+      it('updates existing job', function(done) {
+        var job = jobs.create('someJob', {});
+        job.attrs._id = 'foo';
+        job.save(function(err, job) {
+          expect(job.attrs._id).to.be('foo');
           done();
         });
       });
