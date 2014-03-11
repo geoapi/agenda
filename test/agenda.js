@@ -136,7 +136,7 @@ describe('Agenda', function() {
           expect(jobs.every('5 minutes', 'send email')).to.be.a(Job);
         });
         it('sets the repeatEvery', function() {
-          expect(jobs.every('5 seconds', 'send email').attrs.repeatInterval).to.be('5 seconds');
+          expect(jobs.every('5 seconds', 'send email').attrs.repeatInterval).to.be(5000);
         });
         it('sets the agenda', function() {
           expect(jobs.every('5 seconds', 'send email').agenda).to.be(jobs);
