@@ -1,15 +1,16 @@
 # Agenda
-[![Build Status](https://api.travis-ci.org/rschmukler/agenda.png)](http://travis-ci.org/rschmukler/agenda) 
-[![Code Climate](https://d3s6mut3hikguw.cloudfront.net/github/rschmukler/agenda.png)](https://codeclimate.com/github/rschmukler/agenda/badges) 
+[![Build Status](https://api.travis-ci.org/rschmukler/agenda.png)](http://travis-ci.org/rschmukler/agenda)
+[![Code Climate](https://d3s6mut3hikguw.cloudfront.net/github/rschmukler/agenda.png)](https://codeclimate.com/github/rschmukler/agenda/badges)
 [![Coverage Status](https://coveralls.io/repos/rschmukler/agenda/badge.png)](https://coveralls.io/r/rschmukler/agenda)
 
-Agenda is a light-weight job scheduling library for Node.js. 
+Agenda is a light-weight job scheduling library for Node.js.
 
 It offers:
 
 - Minimal overhead. Agenda aims to keep its code base small.
 - Mongo backed persistance layer.
-- Scheduling with priority, repeating, and easily readable syntax.
+- Scheduling with configurable priority, concurrency, and repeating
+- Scheduling via cron or human readable syntax.
 - Event backed job queue that you can hook into.
 
 # Installation
@@ -17,6 +18,8 @@ It offers:
 Install via NPM
 
     npm install agenda
+
+You will also need a working [mongo](http://www.mongodb.org/) database (2.4+) to point it to.
 
 # Example Usage
 
@@ -29,13 +32,17 @@ agenda.define('delete old users', function(job, done) {
 
 agenda.every('3 minutes', 'delete old users');
 
+// Alternatively, you could also do:
+
+agenda.every('*/3 * * * *', 'delete old users');
+
 agenda.start();
 ```
 
 ```js
 agenda.define('send email report', {priority: 'high', concurrency: 10}, function(job, done) {
   var data = job.attrs.data;
-  emailClient.send({ 
+  emailClient.send({
     to: data.to,
     from: 'example@example.com',
     subject: 'Email Report',
@@ -62,12 +69,14 @@ mapped to a database collection and load the jobs from within.
 - [Configuring an agenda](#configuring-an-agenda)
 - [Defining job processors](#defining-job-processors)
 - [Creating jobs](#creating-jobs)
+- [Managing jobs](#managing-jobs)
 - [Starting the job processor](#starting-the-job-processor)
+- [Multiple job processors](#multiple-job-processors)
 - [Manually working with jobs](#manually-working-with-a-job)
 - [Job Queue Events](#job-queue-events)
 - [Frequently asked questions](#frequently-asked-questions)
 
-## Configuring an agenda 
+## Configuring an agenda
 All configuration methods are chainable, meaning you can do something like:
 
 ```js
@@ -77,6 +86,7 @@ agenda
   .processEvery('3 minutes')
   ...;
 ```
+
 
 ### database(url, [collectionName])
 
@@ -91,6 +101,18 @@ You can also specify it during instantiation.
 
 ```js
 var agenda = new Agenda({db: { address: 'localhost:27017/agenda-test', collection: 'agendaJobs' }});
+```
+
+### mongo(mongoSkinInstance)
+
+Use an existing mongoskin instance. This can help consolidate connections to a
+database. You can instead use `.database` to have agenda handle connecting for
+you.
+
+You can also specify it during instantiation.
+
+```js
+var agenda = new Agenda({mongo: mongoSkinInstance});
 ```
 
 ### processEvery(interval)
@@ -151,12 +173,14 @@ Before you can use a job, you must define its processing behavior.
 
 Defines a job with the name of `jobName`. When a job of job name gets run, it
 will be passed to `fn(job, done)`. To maintain asynchronous behavior, you must
-call `done()` when you are processing the job.
+call `done()` when you are processing the job. If your function is synchronous,
+you may omit `done` from the signature.
 
 `options` is an optional argument which can overwrite the defaults. It can take
 the following:
 
-- `concurrency`: `number` maxinum number of that job that can be running at once
+- `concurrency`: `number` maxinum number of that job that can be running at once (per instance of agenda)
+- `lockLifetime`: `number` interval in ms of how long the job stays locked for (see [multiple job processors](#multiple-job-processors) for more info)
 - `priority`: `(lowest|low|normal|high|highest|number)` specifies the priority
   of the job. Higher priority jobs will run first. See the priority mapping
   below
@@ -172,6 +196,7 @@ Priority mapping:
 }
 ```
 
+Async Job:
 ```js
 agenda.define('some long running job', function(job, done) {
   doSomelengthyTask(function(data) {
@@ -179,6 +204,14 @@ agenda.define('some long running job', function(job, done) {
     sendThatData(data);
     done();
   });
+});
+```
+
+Sync Job:
+
+```js
+agenda.define('say hello', function(job) {
+  console.log("Hello!");
 });
 ```
 
@@ -192,8 +225,10 @@ job in the database, even if that line is run multiple times. This lets you put
 it in a file that may get run multiple times, such as `webserver.js` which may
 reboot from time to time.
 
+`interval` can be a human-readable format `String`, a cron format `String`, or a `Number`.
+
 `data` is an optional argument that will be passed to the processing function
-under `job.data`.
+under `job.attrs.data`.
 
 Returns the `job`.
 
@@ -224,6 +259,19 @@ Returns the `job`.
 agenda.schedule('tomorrow at noon', 'printAnalyticsReport', {userCount: 100});
 ```
 
+### now(name, data)
+
+Schedules a job to run `name` once immediately.
+
+`data` is an optional argument that will be passed to the processing function
+under `job.data`.
+
+Returns the `job`.
+
+```js
+agenda.now('do the hokey pokey');
+```
+
 ### create(jobName, data)
 
 Returns an instance of a `jobName` with `data`. This does *NOT* save the job in
@@ -233,6 +281,31 @@ the database. See below to learn how to manually work with jobs.
 var job = agenda.create('printAnalyticsReport', {userCount: 100});
 job.save(function(err) {
   console.log("Job successfully saved");
+});
+```
+
+## Managing Jobs
+
+
+### jobs(mongoskin query)
+
+Lets you query all of the jobs in the agenda job's database. This is a full [mongoskin](https://github.com/kissjs/node-mongoskin) 
+`find` query. See mongoskin's documentation for details.
+
+```js
+agenda.jobs({name: 'printAnalyticsReport'}, function(err, jobs) {
+  // Work with jobs (see below)
+});
+```
+
+### purge(cb)
+
+Removes all jobs in the database without defined behaviors. Useful if you change a definition name and want to remove old jobs.
+
+*IMPORTANT:* Do not run this before you finish defining all of your jobs. If you do, you will nuke your database of jobs.
+
+```js
+agenda.purge(function(err, numRemoved) {
 });
 ```
 
@@ -251,6 +324,27 @@ are new jobs.
 
 Stops the job queue processing.
 
+## Multiple job processors
+
+Sometimes you may want to have multiple node instances / machines process from
+the same queue. Agenda supports a locking mechanism to ensure that multiple
+queues don't process the same job.
+
+You can configure the locking mechanism by specifying `lockLifetime` as an
+interval when defining the job.
+
+```js
+agenda.define('someJob', {lockLifetime: 10000}, function(job, cb) {
+  //Do something in 10 seconds or less...
+});
+```
+
+This will ensure that no other job processor (this one included) attempts to run the job again
+for the next 10 seconds. If you have a particularly long running job, you will want to
+specify a longer lockLifetime.
+
+By default it is 10 minutes. Typically you shouldn't have a job that runs for 10 minutes,
+so this is really insurance should the job queue crash before the job is unlocked.
 
 ## Manually working with a job
 
@@ -261,6 +355,8 @@ with a call to `job.save()` in order to persist the changes to the database.
 ### repeatEvery(interval)
 
 Specifies an `interval` on which the job should repeat.
+
+`interval` can be a human-readable format `String`, a cron format `String`, or a `Number`.
 
 ```js
 job.repeatEvery('10 minutes');
@@ -291,8 +387,13 @@ job.save();
 Sets `job.attrs.failedAt` to `now`, and sets `job.attrs.failReason`
 to `reason`.
 
+Optionally, `reason` can be an error, in which case `job.attrs.failReason` will
+be set to `error.message`
+
 ```js
 job.fail('insuficient disk space');
+// or
+job.fail(new Error('insufficient disk space'));
 job.save();
 ```
 
@@ -317,9 +418,28 @@ job.save(function(err) {
 })
 ```
 
+### remove(callback)
+
+Removes the `job` from the database.
+
+```js
+job.save(function(err) {
+    if(!err) console.log("Successfully saved job to collection");
+})
+```
+
 ## Job Queue Events
 
 An instance of an agenda will emit the following events:
+
+- `start` - called just before a job starts
+- `start:job name` - called just before the specified job starts
+
+```js
+agenda.on('start', function(job) {
+  console.log("Job %s starting", job.attrs.name);
+});
+```
 
 - `complete` - called when a job finishes, regardless of if it succeeds or fails
 - `complete:job name` - called when a job finishes, regardless of if it succeeds or fails
@@ -355,16 +475,77 @@ agenda.on('fail:send email', function(err, job) {
 The decision to use Mongo instead of Redis is intentional. Redis is often used for
 non-essential data (such as sessions) and without configuration doesn't
 guarantee the same level of persistence as Mongo (should the server need to be
-restarted/crash). 
+restarted/crash).
 
 Agenda decides to focus on persistence without requiring special configuration
 of Redis (thereby degrading the performance of the Redis server on non-critical
-data, such as sessions). 
+data, such as sessions).
 
 Ultimately if enough people want a Redis driver instead of Mongo, I will write
 one. (Please open an issue requesting it). For now, Agenda decided to focus on
 guaranteed persistence.
 
+### Spawning / forking processes.
+
+Ultimately Agenda can work from a single job queue across multiple machines, node processes, or forks. If you are interested in having more than one worker, [Bars3s](http://github.com/bars3s) has written up a fantastic example of how one might do it:
+
+```js
+var cluster = require('cluster'),
+    cpuCount = require('os').cpus().length,
+    jobWorkers = [],
+    webWorkers = [];
+
+if (cluster.isMaster) {
+
+    // Create a worker for each CPU
+    for (var i = 0; i < cpuCount; i += 1) {
+        addJobWorker();
+        addWebWorker();
+    }
+
+    cluster.on('exit', function (worker, code, signal) {
+
+        if (jobWorkers.indexOf(worker.id) != -1) {
+            console.log('job worker ' + worker.process.pid + ' died. Trying to respawn...');
+            removeJobWorker(worker.id);
+            addJobWorker();
+        }
+
+        if (webWorkers.indexOf(worker.id) != -1) {
+            console.log('http worker ' + worker.process.pid + ' died. Trying to respawn...');
+            removeWebWorker(worker.id);
+            addWebWorker();
+        }
+    });
+
+} else {
+    if (process.env.web) {
+        console.log('start http server: ' + cluster.worker.id);
+        require('./app/web-http');//initialize the http server here
+    }
+
+    if (process.env.job) {
+        console.log('start job server: ' + cluster.worker.id);
+        require('./app/job-worker');//initialize the agenda here 
+    }
+}
+
+function addWebWorker() {
+    webWorkers.push(cluster.fork({web: 1}).id);
+}
+
+function addJobWorker() {
+    jobWorkers.push(cluster.fork({job: 1}).id);
+}
+
+function removeWebWorker(id) {
+    webWorkers.splice(webWorkers.indexOf(id), 1);
+}
+
+function removeJobWorker(id) {
+    jobWorkers.splice(jobWorkers.indexOf(id), 1);
+}
+```
 
 
 
